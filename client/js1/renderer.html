@@ -1,0 +1,497 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Eclypse Client</title>
+  <style>
+    /* Основные стили */
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      margin: 0;
+      padding: 20px;
+      background-color: #1e1e1e;
+      color: #ffffff;
+    }
+    
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+    
+    /* Стили для формы входа */
+    #loginForm {
+      max-width: 400px;
+      margin: 100px auto;
+      padding: 30px;
+      background-color: #2d2d2d;
+      border-radius: 8px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+    }
+    
+    #loginForm h2 {
+      text-align: center;
+      margin-bottom: 30px;
+      color: #4fc3f7;
+    }
+    
+    .form-group {
+      margin-bottom: 20px;
+    }
+    
+    .form-group label {
+      display: block;
+      margin-bottom: 5px;
+      font-weight: bold;
+    }
+    
+    .form-group input, .form-group select {
+      width: 100%;
+      padding: 12px;
+      border: 1px solid #444;
+      border-radius: 4px;
+      background-color: #3d3d3d;
+      color: white;
+      box-sizing: border-box;
+    }
+    
+    .form-group input:focus, .form-group select:focus {
+      outline: none;
+      border-color: #4fc3f7;
+    }
+    
+    .btn {
+      padding: 12px 20px;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-weight: bold;
+      transition: background-color 0.3s;
+    }
+    
+    .btn-primary {
+      background-color: #4fc3f7;
+      color: #000;
+      width: 100%;
+    }
+    
+    .btn-primary:hover {
+      background-color: #29b6f6;
+    }
+    
+    .btn-danger {
+      background-color: #f44336;
+      color: white;
+    }
+    
+    .btn-danger:hover {
+      background-color: #d32f2f;
+    }
+    
+    .btn-success {
+      background-color: #4caf50;
+      color: white;
+    }
+    
+    .btn-success:hover {
+      background-color: #388e3c;
+    }
+    
+    .btn-secondary {
+      background-color: #757575;
+      color: white;
+    }
+    
+    .btn-secondary:hover {
+      background-color: #616161;
+    }
+    
+    /* Стили для основного интерфейса */
+    #content {
+      display: none;
+    }
+    
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 30px;
+      padding-bottom: 15px;
+      border-bottom: 1px solid #444;
+    }
+    
+    .tabs {
+      display: flex;
+      margin-bottom: 20px;
+      border-bottom: 1px solid #444;
+    }
+    
+    .tab {
+      padding: 12px 20px;
+      cursor: pointer;
+      background-color: #2d2d2d;
+      border: 1px solid #444;
+      border-bottom: none;
+      border-radius: 4px 4px 0 0;
+      margin-right: 5px;
+    }
+    
+    .tab.active {
+      background-color: #3d3d3d;
+      border-bottom: 1px solid #3d3d3d;
+    }
+    
+    .tab-content {
+      display: none;
+      padding: 20px;
+      background-color: #2d2d2d;
+      border-radius: 0 4px 4px 4px;
+    }
+    
+    .tab-content.active {
+      display: block;
+    }
+    
+    .panel {
+      background-color: #3d3d3d;
+      padding: 20px;
+      border-radius: 4px;
+      margin-bottom: 20px;
+    }
+    
+    .panel h3 {
+      margin-top: 0;
+      color: #4fc3f7;
+    }
+    
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-bottom: 20px;
+    }
+    
+    th, td {
+      padding: 12px;
+      text-align: left;
+      border-bottom: 1px solid #444;
+    }
+    
+    th {
+      background-color: #2d2d2d;
+      font-weight: bold;
+    }
+    
+    tr:hover {
+      background-color: #3a3a3a;
+    }
+    
+    .form-row {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 15px;
+    }
+    
+    .form-row .form-group {
+      flex: 1;
+      margin-bottom: 0;
+    }
+    
+    .status-message {
+      padding: 15px;
+      margin: 15px 0;
+      border-radius: 4px;
+    }
+    
+    .status-success {
+      background-color: rgba(76, 175, 80, 0.2);
+      border: 1px solid #4caf50;
+      color: #4caf50;
+    }
+    
+    .status-error {
+      background-color: rgba(244, 67, 54, 0.2);
+      border: 1px solid #f44336;
+      color: #f44336;
+    }
+    
+    .hidden {
+      display: none;
+    }
+    
+    .mb-20 {
+      margin-bottom: 20px;
+    }
+    
+    .text-center {
+      text-align: center;
+    }
+    
+    /* Стили для панели логов */
+    .log-panel {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      height: 200px;
+      background-color: #1a1a1a;
+      border-top: 2px solid #4fc3f7;
+      padding: 10px;
+      overflow-y: auto;
+      font-family: 'Consolas', 'Monaco', monospace;
+      font-size: 12px;
+      z-index: 1000;
+    }
+    
+    .log-panel h4 {
+      margin: 0 0 10px 0;
+      color: #4fc3f7;
+      font-size: 14px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    
+    .log-entry {
+      margin: 2px 0;
+      padding: 4px 8px;
+      border-left: 3px solid transparent;
+      word-wrap: break-word;
+    }
+    
+    .log-entry.info {
+      border-left-color: #2196f3;
+      color: #90caf9;
+    }
+    
+    .log-entry.success {
+      border-left-color: #4caf50;
+      color: #81c784;
+    }
+    
+    .log-entry.error {
+      border-left-color: #f44336;
+      color: #e57373;
+      background-color: rgba(244, 67, 54, 0.1);
+    }
+    
+    .log-entry.warning {
+      border-left-color: #ff9800;
+      color: #ffb74d;
+    }
+    
+    .log-timestamp {
+      color: #757575;
+      margin-right: 8px;
+    }
+    
+    .log-message {
+      color: inherit;
+    }
+    
+    .log-data {
+      color: #ffeb3b;
+      margin-left: 10px;
+      font-style: italic;
+    }
+    
+    .log-controls {
+      display: flex;
+      gap: 10px;
+    }
+    
+    .log-controls button {
+      padding: 4px 12px;
+      font-size: 11px;
+    }
+    
+    /* Скорректировать отступ для основного контента */
+    body {
+      padding-bottom: 220px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <!-- Форма входа -->
+    <div id="loginForm">
+      <h2>Вход в Eclypse</h2>
+      <div id="loginMessage" class="status-message hidden"></div>
+      <div class="form-group">
+        <label for="username">Имя пользователя:</label>
+        <input type="text" id="username" required />
+      </div>
+      <div class="form-group">
+        <label for="password">Пароль:</label>
+        <input type="password" id="password" required />
+      </div>
+      <button id="loginButton" class="btn btn-primary">Войти</button>
+    </div>
+
+    <!-- Основной интерфейс -->
+    <div id="content">
+      <div class="header">
+        <h1>Eclypse Client</h1>
+        <div>
+          <span id="currentUser"></span>
+          <button id="logoutButton" class="btn btn-danger" style="margin-left: 15px;">Выход</button>
+        </div>
+      </div>
+
+      <!-- Вкладки -->
+      <div class="tabs">
+        <div class="tab active" data-tab="user-vms">Мои виртуальные машины</div>
+        <div class="tab" data-tab="admin-users">Пользователи</div>
+        <div class="tab" data-tab="admin-vms">Виртуальные машины</div>
+        <div class="tab" data-tab="admin-assignments">Назначения</div>
+      </div>
+
+      <!-- Содержимое вкладок -->
+      <!-- Мои виртуальные машины -->
+      <div class="tab-content active" id="user-vms-content">
+        <div class="panel">
+          <h3>Список доступных виртуальных машин</h3>
+          <table id="userVMsTable">
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Имя хоста</th>
+                <th>IP адрес</th>
+                <th>Действия</th>
+              </tr>
+            </thead>
+            <tbody>
+              <!-- Данные будут заполнены через JavaScript -->
+            </tbody>
+          </table>
+          <div id="userVMsMessage" class="status-message hidden"></div>
+        </div>
+      </div>
+
+      <!-- Пользователи (админ) -->
+      <div class="tab-content" id="admin-users-content">
+        <div class="panel">
+          <h3>Создать нового пользователя</h3>
+          <div id="createUserMessage" class="status-message hidden"></div>
+          <div class="form-row">
+            <div class="form-group">
+              <label for="newUsername">Имя пользователя:</label>
+              <input type="text" id="newUsername" required />
+            </div>
+            <div class="form-group">
+              <label for="newPassword">Пароль:</label>
+              <input type="password" id="newPassword" required />
+            </div>
+            <div class="form-group">
+              <label for="newRole">Роль:</label>
+              <select id="newRole">
+                <option value="user">Пользователь</option>
+                <option value="admin">Администратор</option>
+                <option value="master">Мастер</option>
+              </select>
+            </div>
+          </div>
+          <button id="createUserButton" class="btn btn-success">Создать пользователя</button>
+        </div>
+        
+        <div class="panel">
+          <h3>Список пользователей</h3>
+          <div id="usersListMessage" class="status-message hidden"></div>
+          <table id="usersTable">
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Имя пользователя</th>
+                <th>Роль</th>
+                <th>Действия</th>
+              </tr>
+            </thead>
+            <tbody>
+              <!-- Данные будут заполнены через JavaScript -->
+            </tbody>
+          </table>
+          <button id="refreshUsersButton" class="btn btn-secondary">Обновить список</button>
+        </div>
+      </div>
+
+      <!-- Виртуальные машины (админ) -->
+      <div class="tab-content" id="admin-vms-content">
+        <div class="panel">
+          <h3>Список виртуальных машин</h3>
+          <div id="vmsListMessage" class="status-message hidden"></div>
+          <table id="vmsTable">
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Имя хоста</th>
+                <th>IP адрес</th>
+                <th>Пользователь Sunshine</th>
+              </tr>
+            </thead>
+            <tbody>
+              <!-- Данные будут заполнены через JavaScript -->
+            </tbody>
+          </table>
+          <button id="refreshVMsButton" class="btn btn-secondary">Обновить список</button>
+        </div>
+      </div>
+
+      <!-- Назначения (админ) -->
+      <div class="tab-content" id="admin-assignments-content">
+        <div class="panel">
+          <h3>Назначить виртуальную машину пользователю</h3>
+          <div id="assignMessage" class="status-message hidden"></div>
+          <div class="form-row">
+            <div class="form-group">
+              <label for="assignUser">Пользователь:</label>
+              <select id="assignUser">
+                <!-- Опции будут заполнены через JavaScript -->
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="assignVM">Виртуальная машина:</label>
+              <select id="assignVM">
+                <!-- Опции будут заполнены через JavaScript -->
+              </select>
+            </div>
+          </div>
+          <button id="assignButton" class="btn btn-success">Назначить</button>
+        </div>
+        
+        <div class="panel">
+          <h3>Список назначений</h3>
+          <div id="assignmentsListMessage" class="status-message hidden"></div>
+          <table id="assignmentsTable">
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Пользователь</th>
+                <th>Виртуальная машина</th>
+                <th>Действия</th>
+              </tr>
+            </thead>
+            <tbody>
+              <!-- Данные будут заполнены через JavaScript -->
+            </tbody>
+          </table>
+          <button id="refreshAssignmentsButton" class="btn btn-secondary">Обновить список</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Панель логов -->
+  <div class="log-panel">
+    <h4>
+      <span>📋 Logs (Verbose Mode)</span>
+      <div class="log-controls">
+        <button id="clearLogsButton" class="btn btn-secondary">Clear</button>
+        <button id="toggleLogsButton" class="btn btn-secondary">Hide</button>
+      </div>
+    </h4>
+    <div id="logContainer">
+      <!-- Логи будут добавляться сюда динамически -->
+    </div>
+  </div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>

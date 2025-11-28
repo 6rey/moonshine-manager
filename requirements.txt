@@ -1,0 +1,5 @@
+customtkinter
+requests
+PyJWT
+urllib3
+zeroconf>=0.131.0

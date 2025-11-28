@@ -6,6 +6,7 @@ cmd form app folder
 - cd client
     Install python dependencies
 - pip install customtkinter requests PyJWT urllib3 zeroconf
+
     Run Client app
 - python admin_sunshine.py
 

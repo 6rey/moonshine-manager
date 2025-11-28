@@ -1,256 +1,53 @@
-import customtkinter as ctk
-from tkinter import messagebox, scrolledtext
-import requests
-import jwt # To decode token and display connected user
-import urllib3 # To disable SSL warnings
-import socket
-import threading
-import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from ipaddress import IPv4Network, IPv4Address
-
-# Try to import zeroconf for mDNS discovery
-try:
-    from zeroconf import ServiceBrowser, Zeroconf, ServiceStateChange
-    ZEROCONF_AVAILABLE = True
-except ImportError:
-    ZEROCONF_AVAILABLE = False
-    print("Warning: zeroconf not installed. mDNS discovery will not be available.")
-    print("Install with: pip install zeroconf")
-
-# Disable warnings for unverified certificates
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
-# --- Configuration ---
-API_URL = "https://192.168.116.11" # The API listens directly on port 443
-# If you use api.caron.fun with a hosts entry, you can put:
-# API_URL = "https://api.caron.fun"
-
-# Subnet configuration file
-SUBNETS_CONFIG_FILE = "subnets.conf"
-
-# Sunshine ports
-SUNSHINE_HTTPS_PORT = 47989
-SUNSHINE_HTTP_PORT = 47984
-SUNSHINE_ALT_PORT = 47990  # Alternative/custom port
-
-# --- mDNS Listener for Sunshine Discovery ---
-class SunshineListener:
-    """Listener for mDNS service discovery of Sunshine hosts"""
+    # ===== AUTO-DISCOVERY AND SUBNET CONFIGURATION METHODS =====
     
-    def __init__(self):
-        self.discovered_hosts = []
-        self.lock = threading.Lock()
-    
-    def add_service(self, zeroconf, service_type, name):
-        """Called when a Sunshine service is discovered"""
-        info = zeroconf.get_service_info(service_type, name)
-        if info:
-            try:
-                # Extract IP address
-                ip = socket.inet_ntoa(info.addresses[0]) if info.addresses else None
-                if ip:
-                    # Extract hostname from service name
-                    hostname = name.split('.')[0]
-                    
-                    with self.lock:
-                        # Avoid duplicates
-                        if not any(h['ip_address'] == ip for h in self.discovered_hosts):
-                            self.discovered_hosts.append({
-                                'hostname': hostname,
-                                'ip_address': ip,
-                                'port': info.port if info.port else SUNSHINE_HTTPS_PORT,
-                                'method': 'mDNS'
-                            })
-            except Exception as e:
-                print(f"Error processing mDNS service: {e}")
-    
-    def remove_service(self, zeroconf, service_type, name):
-        """Called when a service is removed (not used)"""
-        pass
-    
-    def update_service(self, zeroconf, service_type, name):
-        """Called when a service is updated (not used)"""
-        pass
-
-class AddVMMangerApp:
-    def __init__(self, root):
-        self.root = root
-        self.root.title("Eclypse: Add Virtual Machine")
-        self.root.geometry("600x650")
-        ctk.set_appearance_mode("dark")
-        ctk.set_default_color_theme("blue")
-
-        self.token = None
-        self.headers = None
-        self.current_user_role = None
-        self.verify_ssl = False # By default, disable SSL verification for self-signed certificates
-
-        # --- Main frame ---
-        self.main_frame = ctk.CTkFrame(self.root)
-        self.main_frame.pack(fill="both", expand=True, padx=10, pady=10)
-
-        # --- Log area ---
-        self.log_frame = ctk.CTkFrame(self.root)
-        self.log_frame.pack(fill="x", padx=10, pady=(0, 10), side="bottom")
-        self.log_area = scrolledtext.ScrolledText(self.log_frame, height=5, state='disabled')
-        self.log_area.pack(fill="both", expand=True, padx=5, pady=5)
-        self.log("'Add VM' application started.")
-
-        # --- Login screen ---
-        self.setup_login_frame()
-
-    def log(self, message):
-        """Adds a message to the log area."""
-        from datetime import datetime
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        self.log_area.configure(state='normal') # Enable editing
-        self.log_area.insert("end", f"[{timestamp}] {message}\n")
-        self.log_area.see("end") # Scroll to the end
-        self.log_area.configure(state='disabled') # Disable editing
-
-    def setup_login_frame(self):
-        """Sets up the login interface to obtain admin token."""
-        self.login_frame = ctk.CTkFrame(self.main_frame)
-        self.login_frame.pack(fill="both", expand=True, padx=20, pady=20)
-
-        title_label = ctk.CTkLabel(self.login_frame, text="Admin API Login", font=("Arial", 20, "bold"))
-        title_label.pack(pady=20)
-
-        ctk.CTkLabel(self.login_frame, text="Admin Username:").pack(pady=(10, 0))
-        self.username_entry = ctk.CTkEntry(self.login_frame, width=250)
-        self.username_entry.pack(pady=5)
-        self.username_entry.insert(0, "admin") # Pre-fill with "admin"
-
-        ctk.CTkLabel(self.login_frame, text="Admin Password:").pack(pady=(10, 0))
-        self.password_entry = ctk.CTkEntry(self.login_frame, width=250, show="•")
-        self.password_entry.pack(pady=5)
-        self.password_entry.insert(0, "Test1234") # Pre-fill with "Test1234"
-
-        ssl_frame = ctk.CTkFrame(self.login_frame)
-        ssl_frame.pack(pady=10)
-        self.ssl_var = ctk.BooleanVar(value=self.verify_ssl) # Use default value
-        self.ssl_checkbox = ctk.CTkCheckBox(ssl_frame, text="Verify SSL certificates",
-                                            variable=self.ssl_var,
-                                            command=self.toggle_ssl_verification)
-        self.ssl_checkbox.pack(side="left", padx=5)
-
-        login_button = ctk.CTkButton(self.login_frame, text="Login", command=self.authenticate)
-        login_button.pack(pady=20)
-
-        self.show_ssl_warning()
-
-    def toggle_ssl_verification(self):
-        """Enables or disables SSL verification."""
-        self.verify_ssl = self.ssl_var.get()
-        self.log(f"SSL verification {'enabled' if self.verify_ssl else 'disabled'}")
-        self.show_ssl_warning()
-
-    def show_ssl_warning(self):
-        """Displays a warning if SSL verification is disabled."""
-        for widget in self.login_frame.winfo_children():
-            if hasattr(widget, 'ssl_warning_tag') and widget.ssl_warning_tag:
-                widget.destroy()
-
-        if not self.verify_ssl:
-            warning_frame = ctk.CTkFrame(self.login_frame, fg_color="darkred")
-            warning_frame.ssl_warning_tag = True
-            warning_frame.pack(fill="x", padx=20, pady=(0, 10))
-            warning_text = ctk.CTkLabel(
-                warning_frame,
-                text="⚠️ SSL certificate verification is disabled.\nThis may pose a security risk.",
-                text_color="white"
-            )
-            warning_text.pack(pady=5)
-
-    def authenticate(self):
-        """Attempts to authenticate the admin user."""
-        username = self.username_entry.get()
-        password = self.password_entry.get()
-
-        if not username or not password:
-            messagebox.showerror("Error", "Please enter a username and password.")
-            return
-
-        self.log(f"Login attempt for {username}...")
-        try:
-            response = requests.post(
-                f"{API_URL}/auth/token",
-                json={"username": username, "password": password},
-                verify=self.verify_ssl # Use checkbox value
-            )
-
-            if response.status_code != 200:
-                self.log(f"Authentication failed: {response.status_code} - {response.text}")
-                messagebox.showerror("Authentication Error", f"Failed: {response.status_code}\n{response.json().get('detail', 'Unknown error')}")
-                return
-
-            token_data = response.json()
-            self.token = token_data["access_token"]
-            self.headers = {"Authorization": f"Bearer {self.token}"}
-
-            # Decode token to get role (to ensure it's an admin/master)
-            token_info = jwt.decode(self.token, options={"verify_signature": False})
-            self.current_user_role = token_info.get("role")
-
-            if self.current_user_role not in ["admin", "master"]:
-                messagebox.showerror("Access Denied", "Only users with 'admin' or 'master' role can use this tool.")
-                self.log(f"Login successful for {username}, but role ({self.current_user_role}) not authorized.")
-                self.token = None
-                self.headers = None
-                return
-
-            self.log(f"Authentication successful for {username} (role: {self.current_user_role}).")
-            messagebox.showinfo("Success", f"Authenticated as {username}.")
-
-            self.login_frame.destroy() # Destroy login frame
-            self.setup_add_vm_frame() # Display VM addition interface
-
-        except requests.exceptions.ConnectionError as e:
-            self.log(f"API connection error: {e}")
-            messagebox.showerror("Connection Error", f"Unable to connect to API at {API_URL}.\nCheck that the server is running and the port is accessible.\n\nError: {e}")
-        except Exception as e:
-            self.log(f"Unexpected error during authentication: {e}")
-            messagebox.showerror("Error", f"An unexpected error occurred: {e}")
-
-    def setup_add_vm_frame(self):
-        """Sets up the interface for adding virtual machines."""
-        self.add_vm_frame = ctk.CTkFrame(self.main_frame)
-        self.add_vm_frame.pack(fill="both", expand=True, padx=20, pady=20)
-
-        title_label = ctk.CTkLabel(self.add_vm_frame, text="Add New Virtual Machine", font=("Arial", 20, "bold"))
-        title_label.pack(pady=20)
-
-        # Input fields
-        self.entries = {}
-        fields = {
-            "hostname": "Hostname:",
-            "ip_address": "IP Address:",
-            "sunshine_user": "Sunshine Username:",
-            "sunshine_password": "Sunshine Password:",
-        }
-
-        for key, label_text in fields.items():
-            frame = ctk.CTkFrame(self.add_vm_frame)
-            frame.pack(fill="x", pady=5)
-            ctk.CTkLabel(frame, text=label_text, width=150, anchor="w").pack(side="left", padx=5)
-            entry = ctk.CTkEntry(frame, width=300)
-            entry.pack(side="left", padx=5, fill="x", expand=True)
-            self.entries[key] = entry
-
-        # Scan button
+    def setup_add_vm_tab(self):
+        """Setup Add VM tab with manual entry and auto-discovery"""
+        # Title
+        title_label = ctk.CTkLabel(self.add_vm_tab, text="Add Virtual Machine", 
+                                   font=("Arial", 16, "bold"))
+        title_label.pack(pady=10)
+        
+        # Manual entry fields
+        fields_frame = ctk.CTkFrame(self.add_vm_tab)
+        fields_frame.pack(padx=20, pady=10, fill="x")
+        
+        # Entry fields dictionary
+        self.add_vm_entries = {}
+        
+        fields = [
+            ("hostname", "Hostname:"),
+            ("ip_address", "IP Address:"),
+            ("sunshine_user", "Sunshine User:"),
+            ("sunshine_password", "Sunshine Password:")
+        ]
+        
+        for field, label_text in fields:
+            label = ctk.CTkLabel(fields_frame, text=label_text)
+            label.pack(pady=(10, 0))
+            
+            if field == "sunshine_password":
+                entry = ctk.CTkEntry(fields_frame, width=300, show="•")
+            else:
+                entry = ctk.CTkEntry(fields_frame, width=300)
+            
+            entry.pack(pady=5)
+            self.add_vm_entries[field] = entry
+        
+        # Auto-Discovery button
         scan_button = ctk.CTkButton(
-            self.add_vm_frame,
+            self.add_vm_tab,
             text="🔍 Auto-Discover Sunshine Hosts",
             command=self.scan_network,
             fg_color="#1f6aa5",
-            hover_color="#144870"
+            hover_color="#144870",
+            width=250,
+            height=40
         )
-        scan_button.pack(pady=10)
+        scan_button.pack(pady=15)
         
         # Config editor button
         config_button = ctk.CTkButton(
-            self.add_vm_frame,
+            self.add_vm_tab,
             text="⚙️ Configure Subnets",
             command=self.open_subnet_config,
             fg_color="#555555",
@@ -260,67 +57,62 @@ class AddVMMangerApp:
         config_button.pack(pady=5)
         
         # Separator
-        separator_label = ctk.CTkLabel(self.add_vm_frame, text="─── OR ───", 
+        separator_label = ctk.CTkLabel(self.add_vm_tab, text="─── OR ───", 
                                       text_color="gray")
-        separator_label.pack(pady=5)
+        separator_label.pack(pady=10)
         
-        # Add button
-        add_button = ctk.CTkButton(self.add_vm_frame, text="Add VM Manually", 
-                                  command=self.add_vm)
+        # Add VM button
+        add_button = ctk.CTkButton(
+            self.add_vm_tab,
+            text="Add VM Manually",
+            command=self.add_vm_manual,
+            width=200
+        )
         add_button.pack(pady=10)
-
-        back_button = ctk.CTkButton(self.add_vm_frame, text="Logout", command=self.logout)
-        back_button.pack(pady=5)
-
-    def add_vm(self):
-        """Retrieves data and sends request to API to register VM."""
-        vm_data = {key: entry.get().strip() for key, entry in self.entries.items()}
-
-        # Simple field validation
+    
+    def add_vm_manual(self):
+        """Add VM from manual entry fields"""
+        vm_data = {key: entry.get().strip() for key, entry in self.add_vm_entries.items()}
+        
+        # Validation
         for key, value in vm_data.items():
             if not value:
-                messagebox.showerror("Input Error", f"The field '{key.replace('_', ' ').capitalize()}' cannot be empty.")
+                messagebox.showerror("Input Error", 
+                                   f"The field '{key.replace('_', ' ').capitalize()}' cannot be empty.")
                 return
-
+        
         self.log(f"Attempting to add VM '{vm_data['hostname']}'...")
         try:
             response = requests.post(
-                f"{API_URL}/vm/register",
+                f"{self.api_url}/vm/register",
                 headers=self.headers,
                 json=vm_data,
-                verify=self.verify_ssl # Use checkbox value
+                verify=self.verify_ssl
             )
-
+            
             if response.status_code != 200:
                 self.log(f"Failed to add VM: {response.status_code} - {response.text}")
-                messagebox.showerror("VM Addition Error", f"Failed: {response.status_code}\n{response.json().get('detail', 'Unknown error')}")
+                messagebox.showerror("VM Addition Error", 
+                                   f"Failed: {response.status_code}\\n{response.json().get('detail', 'Unknown error')}")
                 return
-
+            
             result = response.json()
             self.log(f"VM '{result['hostname']}' successfully added (ID: {result['id']}).")
             messagebox.showinfo("Success", f"VM '{result['hostname']}' successfully added!")
-
-            # Clear fields after successful addition
-            for entry in self.entries.values():
+            
+            # Clear fields
+            for entry in self.add_vm_entries.values():
                 entry.delete(0, ctk.END)
-
+            
+            # Refresh VM list in other tabs
+            self.load_vms()
+            
         except requests.exceptions.RequestException as e:
             self.log(f"API communication error: {e}")
-            messagebox.showerror("API Error", f"Unable to communicate with API.\nError: {e}")
+            messagebox.showerror("API Error", f"Unable to communicate with API.\\nError: {e}")
         except Exception as e:
             self.log(f"Unexpected error while adding VM: {e}")
             messagebox.showerror("Error", f"An unexpected error occurred: {e}")
-
-    def logout(self):
-        """Logs out the user and returns to login screen."""
-        self.token = None
-        self.headers = None
-        self.current_user_role = None
-        self.add_vm_frame.destroy()
-        self.setup_login_frame()
-        self.log("Logged out.")
-    
-    # --- Network Discovery Methods ---
     
     def load_subnets_config(self):
         """Load subnet list from configuration file"""
@@ -402,6 +194,7 @@ class AddVMMangerApp:
     def open_subnet_config(self):
         """Open subnet configuration editor"""
         import os
+        import tkinter as tk
         
         config_window = ctk.CTkToplevel(self.root)
         config_window.title("Subnet Configuration")
@@ -417,7 +210,7 @@ class AddVMMangerApp:
         # Instructions
         instructions = ctk.CTkLabel(
             config_window,
-            text="Enter subnets to scan (one per line, CIDR notation)\nExample: 192.168.1.0/24",
+            text="Enter subnets to scan (one per line, CIDR notation)\\nExample: 192.168.1.0/24",
             font=("Arial", 10),
             text_color="gray"
         )
@@ -427,7 +220,6 @@ class AddVMMangerApp:
         text_frame = ctk.CTkFrame(config_window)
         text_frame.pack(pady=10, padx=20, fill="both", expand=True)
         
-        import tkinter as tk
         text_editor = tk.Text(text_frame, height=15, width=50, 
                              bg="#2b2b2b", fg="white", 
                              insertbackground="white",
@@ -469,10 +261,10 @@ class AddVMMangerApp:
         """Open scan dialog and start network discovery"""
         self.log("Starting network scan for Sunshine hosts...")
         
-        # Create scan window
+        # Create scan dialog
         scan_window = ctk.CTkToplevel(self.root)
-        scan_window.title("Sunshine Host Discovery")
-        scan_window.geometry("600x500")
+        scan_window.title("Network Scan")
+        scan_window.geometry("700x600")
         scan_window.transient(self.root)
         scan_window.grab_set()
         
@@ -483,11 +275,11 @@ class AddVMMangerApp:
         
         # Status label
         self.scan_status_label = ctk.CTkLabel(scan_window, text="Initializing scan...", 
-                                              font=("Arial", 12))
+                                             font=("Arial", 12))
         self.scan_status_label.pack(pady=5)
         
         # Progress bar
-        self.scan_progress = ctk.CTkProgressBar(scan_window, width=500)
+        self.scan_progress = ctk.CTkProgressBar(scan_window, width=600)
         self.scan_progress.pack(pady=10)
         self.scan_progress.set(0)
         
@@ -496,7 +288,7 @@ class AddVMMangerApp:
                                      font=("Arial", 14, "bold"))
         results_label.pack(pady=(10, 5))
         
-        self.scan_results_frame = ctk.CTkScrollableFrame(scan_window, width=550, height=250)
+        self.scan_results_frame = ctk.CTkScrollableFrame(scan_window, width=650, height=300)
         self.scan_results_frame.pack(pady=5, padx=20, fill="both", expand=True)
         
         # Close button
@@ -711,7 +503,7 @@ class AddVMMangerApp:
         # Info label
         info_label = ctk.CTkLabel(
             cred_window,
-            text=f"Host: {host.get('hostname', 'Unknown')}\nIP: {host['ip_address']}\n\nEnter Sunshine login credentials:",
+            text=f"Host: {host.get('hostname', 'Unknown')}\\nIP: {host['ip_address']}\\n\\nEnter Sunshine login credentials:",
             font=("Arial", 10)
         )
         info_label.pack(pady=5)
@@ -760,7 +552,7 @@ class AddVMMangerApp:
         confirm_btn = ctk.CTkButton(button_frame, text="OK", command=on_confirm, width=100)
         confirm_btn.pack(side="left", padx=5)
         
-        cancel_btn = ctk.CTkButton(button_frame, text="Cancel",  command=on_cancel, width=100)
+        cancel_btn = ctk.CTkButton(button_frame, text="Cancel", command=on_cancel, width=100)
         cancel_btn.pack(side="left", padx=5)
         
         # Handle Enter key
@@ -772,19 +564,19 @@ class AddVMMangerApp:
         # If user confirmed, auto-fill the form
         if credentials.get('confirmed'):
             # Auto-fill hostname
-            self.entries['hostname'].delete(0, ctk.END)
-            self.entries['hostname'].insert(0, host.get('hostname', ''))
+            self.add_vm_entries['hostname'].delete(0, ctk.END)
+            self.add_vm_entries['hostname'].insert(0, host.get('hostname', ''))
             
             # Auto-fill IP address
-            self.entries['ip_address'].delete(0, ctk.END)
-            self.entries['ip_address'].insert(0, host['ip_address'])
+            self.add_vm_entries['ip_address'].delete(0, ctk.END)
+            self.add_vm_entries['ip_address'].insert(0, host['ip_address'])
             
             # Auto-fill Sunshine credentials
-            self.entries['sunshine_user'].delete(0, ctk.END)
-            self.entries['sunshine_user'].insert(0, credentials['sunshine_user'])
+            self.add_vm_entries['sunshine_user'].delete(0, ctk.END)
+            self.add_vm_entries['sunshine_user'].insert(0, credentials['sunshine_user'])
             
-            self.entries['sunshine_password'].delete(0, ctk.END)
-            self.entries['sunshine_password'].insert(0, credentials['sunshine_password'])
+            self.add_vm_entries['sunshine_password'].delete(0, ctk.END)
+            self.add_vm_entries['sunshine_password'].insert(0, credentials['sunshine_password'])
             
             # Log action
             self.log(f"Auto-filled form with host: {host['ip_address']} and credentials")
@@ -798,13 +590,8 @@ class AddVMMangerApp:
                 f"User: {credentials['sunshine_user']}\\n\\n"
                 f"Click 'Add VM Manually' to register."
             )
+            
+            # Switch to Add VM tab
+            self.tabs.set("➕ Add VM")
         else:
             self.log("Host selection cancelled by user")
-
-def main():
-    root = ctk.CTk()
-    app = AddVMMangerApp(root)
-    root.mainloop()
-
-if __name__ == "__main__":
-    main()

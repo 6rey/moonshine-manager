@@ -7,6 +7,17 @@ import time
 import urllib3
 import jwt
 import os # Import of os module for file operations
+import socket # For network scanning
+from concurrent.futures import ThreadPoolExecutor, as_completed # For parallel scanning
+from ipaddress import IPv4Network # For subnet operations
+
+# Try to import zeroconf for mDNS discovery
+try:
+    from zeroconf import ServiceBrowser, Zeroconf
+    ZEROCONF_AVAILABLE = True
+except ImportError:
+    ZEROCONF_AVAILABLE = False
+    print("Warning: zeroconf not available. mDNS discovery disabled. Install with: pip install zeroconf")
 
 # Disable warning for unverified certificates
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -17,11 +28,58 @@ DEFAULT_API_URL = "https://n8nua.pp.ua"
 MOONLIGHT_EXEC = "C:/moonlight/Moonlight.exe"
 CONFIG_FILE = "client_config.txt" # File name for saving/loading the URL
 
+# Subnet configuration file
+SUBNETS_CONFIG_FILE = "subnets.conf"
+
+# Sunshine ports
+SUNSHINE_HTTPS_PORT = 47989
+SUNSHINE_HTTP_PORT = 47984
+SUNSHINE_ALT_PORT = 47990  # Alternative/custom port
+
+# --- mDNS Listener for Sunshine Discovery ---
+class SunshineListener:
+    """Listener for mDNS service discovery of Sunshine hosts"""
+    
+    def __init__(self):
+        self.discovered_hosts = []
+        self.lock = threading.Lock()
+    
+    def add_service(self, zeroconf, service_type, name):
+        """Called when a Sunshine service is discovered"""
+        info = zeroconf.get_service_info(service_type, name)
+        if info:
+            try:
+                # Extract IP address
+                ip = socket.inet_ntoa(info.addresses[0]) if info.addresses else None
+                if ip:
+                    # Extract hostname from service name
+                    hostname = name.split('.')[0]
+                    
+                    with self.lock:
+                        # Avoid duplicates
+                        if not any(h['ip_address'] == ip for h in self.discovered_hosts):
+                            self.discovered_hosts.append({
+                                'hostname': hostname,
+                                'ip_address': ip,
+                                'port': info.port if info.port else SUNSHINE_HTTPS_PORT,
+                                'method': 'mDNS'
+                            })
+            except Exception as e:
+                print(f"Error processing mDNS service: {e}")
+    
+    def remove_service(self, zeroconf, service_type, name):
+        """Called when a service is removed (not used)"""
+        pass
+    
+    def update_service(self, zeroconf, service_type, name):
+        """Called when a service is updated (not used)"""
+        pass
+
 class EclypseApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Eclypse Client")
-        self.root.geometry("800x600")
+        self.root.title("Eclypse Admin - Unified Management Console")
+        self.root.geometry("900x700")
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
         
@@ -206,6 +264,10 @@ class EclypseApp:
         self.connect_tab = self.tabs.add("VM Connection")
         self.setup_connect_tab()
         
+        # NEW: Add VM tab with Auto-Discovery
+        self.add_vm_tab = self.tabs.add("➕ Add VM")
+        self.setup_add_vm_tab()
+        
         # Load user and VM data
         self.load_users()
         self.load_vms()
@@ -296,9 +358,23 @@ class EclypseApp:
         self.vms_treeview.column("ip", width=150)
         self.vms_treeview.pack(fill="both", expand=True, padx=5, pady=5)
         
+        # Buttons frame
+        buttons_frame = ctk.CTkFrame(self.vms_tab)
+        buttons_frame.pack(pady=10, fill="x", padx=5)
+        
         # Refresh button
-        refresh_btn = ctk.CTkButton(self.vms_tab, text="Refresh VMs", command=self.load_vms)
-        refresh_btn.pack(pady=10)
+        refresh_btn = ctk.CTkButton(buttons_frame, text="Refresh VMs", command=self.load_vms)
+        refresh_btn.pack(side="left", padx=5)
+        
+        # Delete button
+        delete_btn = ctk.CTkButton(
+            buttons_frame, 
+            text="Delete VM", 
+            command=self.delete_vm,
+            fg_color="red",
+            hover_color="darkred"
+        )
+        delete_btn.pack(side="right", padx=5)
     
     def setup_assign_tab(self):
         """Sets up the VM-User assignment tab"""
@@ -829,6 +905,60 @@ class EclypseApp:
             self.log(f"Error checking pairing status: {str(e)} - assuming pairing required")
             return False
     
+    def delete_vm(self):
+        """Deletes selected VM from database"""
+        selected = self.vms_treeview.selection()
+        if not selected:
+            messagebox.showwarning("Warning", "Please select a VM to delete")
+            return
+        
+        # Get VM details from selection
+        vm_id = self.vms_treeview.item(selected[0])['values'][0]
+        vm_hostname = self.vms_treeview.item(selected[0])['values'][1]
+        vm_ip = self.vms_treeview.item(selected[0])['values'][2]
+        
+        # Confirmation dialog
+        if not messagebox.askyesno(
+            "Confirm Deletion",
+            f"Are you sure you want to delete this VM?\n\n"
+            f"Hostname: {vm_hostname}\n"
+            f"IP: {vm_ip}\n\n"
+            f"This action cannot be undone."
+        ):
+            return
+        
+        self.log(f"Attempting to delete VM {vm_id} ({vm_hostname})...")
+        try:
+            response = requests.delete(
+                f"{self.api_url}/vm/delete/{vm_id}",
+                headers=self.headers,
+                verify=self.verify_ssl
+            )
+            
+            if response.status_code != 200:
+                self.log(f"Failed to delete VM: {response.status_code} - {response.text}")
+                messagebox.showerror(
+                    "Deletion Error",
+                    f"Failed to delete VM\n"
+                    f"Status: {response.status_code}\n"
+                    f"Error: {response.json().get('detail', 'Unknown error')}"
+                )
+                return
+            
+            result = response.json()
+            self.log(f"VM deleted successfully: {result.get('msg', 'OK')}")
+            messagebox.showinfo("Success", f"VM '{vm_hostname}' deleted successfully!")
+            
+            # Refresh VM list
+            self.load_vms()
+            
+        except requests.exceptions.RequestException as e:
+            self.log(f"API communication error during deletion: {e}")
+            messagebox.showerror("API Error", f"Unable to communicate with API.\nError: {e}")
+        except Exception as e:
+            self.log(f"Unexpected error deleting VM: {e}")
+            messagebox.showerror("Error", f"An unexpected error occurred: {e}")
+    
     def pairing_process(self, vm_id):
         """Handles the pairing process with Sunshine"""
         try:
@@ -916,7 +1046,7 @@ class EclypseApp:
             
             # Launch streaming (whether pairing was just done or already existed)
             self.log("Starting streaming...")
-            stream_cmd = [MOONLIGHT_EXEC, "stream", ip, "Desktop"]
+            stream_cmd = [MOONLIGHT_EXEC, "stream", ip, "Desktop", "--resolution", "1920x1080", "--fps", "60"]
             self.log(f"Command: {' '.join(stream_cmd)}")
             
             subprocess.run(stream_cmd, check=True)
@@ -924,6 +1054,604 @@ class EclypseApp:
             
         except Exception as e:
             self.log(f"Error during pairing process: {str(e)}")
+    
+    # ===== AUTO-DISCOVERY AND SUBNET CONFIGURATION METHODS =====
+    
+    def setup_add_vm_tab(self):
+        """Setup Add VM tab with manual entry and auto-discovery"""
+        # Title
+        title_label = ctk.CTkLabel(self.add_vm_tab, text="Add Virtual Machine", 
+                                   font=("Arial", 16, "bold"))
+        title_label.pack(pady=10)
+        
+        # Manual entry fields
+        fields_frame = ctk.CTkFrame(self.add_vm_tab)
+        fields_frame.pack(padx=20, pady=10, fill="x")
+        
+        # Entry fields dictionary
+        self.add_vm_entries = {}
+        
+        fields = [
+            ("hostname", "Hostname:"),
+            ("ip_address", "IP Address:"),
+            ("sunshine_user", "Sunshine User:"),
+            ("sunshine_password", "Sunshine Password:")
+        ]
+        
+        for field, label_text in fields:
+            label = ctk.CTkLabel(fields_frame, text=label_text)
+            label.pack(pady=(10, 0))
+            
+            if field == "sunshine_password":
+                entry = ctk.CTkEntry(fields_frame, width=300, show="•")
+            else:
+                entry = ctk.CTkEntry(fields_frame, width=300)
+            
+            entry.pack(pady=5)
+            self.add_vm_entries[field] = entry
+        
+        # Auto-Discovery button
+        scan_button = ctk.CTkButton(
+            self.add_vm_tab,
+            text="🔍 Auto-Discover Sunshine Hosts",
+            command=self.scan_network,
+            fg_color="#1f6aa5",
+            hover_color="#144870",
+            width=250,
+            height=40
+        )
+        scan_button.pack(pady=15)
+        
+        # Config editor button
+        config_button = ctk.CTkButton(
+            self.add_vm_tab,
+            text="⚙️ Configure Subnets",
+            command=self.open_subnet_config,
+            fg_color="#555555",
+            hover_color="#444444",
+            width=180
+        )
+        config_button.pack(pady=5)
+        
+        # Separator
+        separator_label = ctk.CTkLabel(self.add_vm_tab, text="─── OR ───", 
+                                      text_color="gray")
+        separator_label.pack(pady=10)
+        
+        # Add VM button
+        add_button = ctk.CTkButton(
+            self.add_vm_tab,
+            text="Add VM Manually",
+            command=self.add_vm_manual,
+            width=200
+        )
+        add_button.pack(pady=10)
+    
+    def add_vm_manual(self):
+        """Add VM from manual entry fields"""
+        vm_data = {key: entry.get().strip() for key, entry in self.add_vm_entries.items()}
+        
+        # Validation
+        for key, value in vm_data.items():
+            if not value:
+                messagebox.showerror("Input Error", 
+                                   f"The field '{key.replace('_', ' ').capitalize()}' cannot be empty.")
+                return
+        
+        self.log(f"Attempting to add VM '{vm_data['hostname']}'...")
+        try:
+            response = requests.post(
+                f"{self.api_url}/vm/register",
+                headers=self.headers,
+                json=vm_data,
+                verify=self.verify_ssl
+            )
+            
+            if response.status_code != 200:
+                self.log(f"Failed to add VM: {response.status_code} - {response.text}")
+                messagebox.showerror("VM Addition Error", 
+                                   f"Failed: {response.status_code}\\n{response.json().get('detail', 'Unknown error')}")
+                return
+            
+            result = response.json()
+            self.log(f"VM '{result['hostname']}' successfully added (ID: {result['id']}).")
+            messagebox.showinfo("Success", f"VM '{result['hostname']}' successfully added!")
+            
+            # Clear fields
+            for entry in self.add_vm_entries.values():
+                entry.delete(0, ctk.END)
+            
+            # Refresh VM list in other tabs
+            self.load_vms()
+            
+        except requests.exceptions.RequestException as e:
+            self.log(f"API communication error: {e}")
+            messagebox.showerror("API Error", f"Unable to communicate with API.\\nError: {e}")
+        except Exception as e:
+            self.log(f"Unexpected error while adding VM: {e}")
+            messagebox.showerror("Error", f"An unexpected error occurred: {e}")
+    
+    def load_subnets_config(self):
+        """Load subnet list from configuration file"""
+        import os
+        
+        # Get config file path relative to script location
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        config_path = os.path.join(script_dir, SUBNETS_CONFIG_FILE)
+        
+        subnets = []
+        
+        # If config doesn't exist, create default one
+        if not os.path.exists(config_path):
+            self.log(f"Config file not found, creating default: {config_path}")
+            self._create_default_subnet_config(config_path)
+        
+        try:
+            with open(config_path, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    # Skip comments and empty lines
+                    if line and not line.startswith('#'):
+                        try:
+                            # Validate subnet
+                            network = IPv4Network(line, strict=False)
+                            subnets.append(str(network))
+                        except ValueError as e:
+                            self.log(f"Invalid subnet in config: {line} - {e}")
+            
+            if not subnets:
+                # Fallback to local network
+                hostname = socket.gethostname()
+                local_ip = socket.gethostbyname(hostname)
+                local_network = IPv4Network(f"{local_ip}/24", strict=False)
+                subnets.append(str(local_network))
+                self.log("No valid subnets in config, using local network")
+            
+            self.log(f"Loaded {len(subnets)} subnet(s) from config")
+            return subnets
+            
+        except Exception as e:
+            self.log(f"Error reading subnet config: {e}")
+            # Fallback to local network
+            try:
+                hostname = socket.gethostname()
+                local_ip = socket.gethostbyname(hostname)
+                local_network = IPv4Network(f"{local_ip}/24", strict=False)
+                return [str(local_network)]
+            except:
+                return ['192.168.1.0/24']  # Ultimate fallback
+    
+    def _create_default_subnet_config(self, config_path):
+        """Create default subnet configuration file"""
+        try:
+            # Detect local network
+            hostname = socket.gethostname()
+            local_ip = socket.gethostbyname(hostname)
+            local_network = IPv4Network(f"{local_ip}/24", strict=False)
+            
+            default_content = f'''# Subnet Configuration File for Sunshine Discovery
+# Add one subnet per line in CIDR notation
+# Lines starting with # are comments
+# Example: 192.168.1.0/24
+
+# Auto-detected local network
+{local_network}
+
+# Add your additional subnets below:
+# 192.168.2.0/24
+# 10.0.0.0/24
+'''
+            with open(config_path, 'w') as f:
+                f.write(default_content)
+            
+            self.log(f"Created default config with subnet: {local_network}")
+        except Exception as e:
+            self.log(f"Error creating default config: {e}")
+    
+    def open_subnet_config(self):
+        """Open subnet configuration editor"""
+        import os
+        import tkinter as tk
+        
+        config_window = ctk.CTkToplevel(self.root)
+        config_window.title("Subnet Configuration")
+        config_window.geometry("500x400")
+        config_window.transient(self.root)
+        config_window.grab_set()
+        
+        # Title
+        title = ctk.CTkLabel(config_window, text="⚙️ Configure Subnets", 
+                            font=("Arial", 18, "bold"))
+        title.pack(pady=15)
+        
+        # Instructions
+        instructions = ctk.CTkLabel(
+            config_window,
+            text="Enter subnets to scan (one per line, CIDR notation)\\nExample: 192.168.1.0/24",
+            font=("Arial", 10),
+            text_color="gray"
+        )
+        instructions.pack(pady=5)
+        
+        # Text editor
+        text_frame = ctk.CTkFrame(config_window)
+        text_frame.pack(pady=10, padx=20, fill="both", expand=True)
+        
+        text_editor = tk.Text(text_frame, height=15, width=50, 
+                             bg="#2b2b2b", fg="white", 
+                             insertbackground="white",
+                             font=("Consolas", 10))
+        text_editor.pack(fill="both", expand=True, padx=5, pady=5)
+        
+        # Load current config
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        config_path = os.path.join(script_dir, SUBNETS_CONFIG_FILE)
+        
+        if os.path.exists(config_path):
+            with open(config_path, 'r') as f:
+                text_editor.insert('1.0', f.read())
+        
+        # Buttons
+        button_frame = ctk.CTkFrame(config_window)
+        button_frame.pack(pady=10)
+        
+        def save_config():
+            content = text_editor.get('1.0', 'end-1c')
+            try:
+                with open(config_path, 'w') as f:
+                    f.write(content)
+                self.log("Subnet configuration saved")
+                messagebox.showinfo("Success", "Subnet configuration saved successfully!")
+                config_window.destroy()
+            except Exception as e:
+                self.log(f"Error saving config: {e}")
+                messagebox.showerror("Error", f"Failed to save config: {e}")
+        
+        save_btn = ctk.CTkButton(button_frame, text="Save", command=save_config)
+        save_btn.pack(side="left", padx=5)
+        
+        cancel_btn = ctk.CTkButton(button_frame, text="Cancel", 
+                                   command=config_window.destroy)
+        cancel_btn.pack(side="left", padx=5)
+    
+    def scan_network(self):
+        """Open scan dialog and start network discovery"""
+        self.log("Starting network scan for Sunshine hosts...")
+        
+        # Create scan dialog
+        scan_window = ctk.CTkToplevel(self.root)
+        scan_window.title("Network Scan")
+        scan_window.geometry("700x600")
+        scan_window.transient(self.root)
+        scan_window.grab_set()
+        
+        # Title
+        title = ctk.CTkLabel(scan_window, text="🔍 Discovering Sunshine Hosts", 
+                            font=("Arial", 18, "bold"))
+        title.pack(pady=15)
+        
+        # Status label
+        self.scan_status_label = ctk.CTkLabel(scan_window, text="Initializing scan...", 
+                                             font=("Arial", 12))
+        self.scan_status_label.pack(pady=5)
+        
+        # Progress bar
+        self.scan_progress = ctk.CTkProgressBar(scan_window, width=600)
+        self.scan_progress.pack(pady=10)
+        self.scan_progress.set(0)
+        
+        # Results frame (scrollable)
+        results_label = ctk.CTkLabel(scan_window, text="Discovered Hosts:", 
+                                     font=("Arial", 14, "bold"))
+        results_label.pack(pady=(10, 5))
+        
+        self.scan_results_frame = ctk.CTkScrollableFrame(scan_window, width=650, height=300)
+        self.scan_results_frame.pack(pady=5, padx=20, fill="both", expand=True)
+        
+        # Close button
+        close_btn = ctk.CTkButton(scan_window, text="Close", 
+                                 command=scan_window.destroy)
+        close_btn.pack(pady=10)
+        
+        # Start scan in background thread
+        scan_thread = threading.Thread(
+            target=self._perform_scan,
+            args=(scan_window,),
+            daemon=True
+        )
+        scan_thread.start()
+    
+    def _perform_scan(self, scan_window):
+        """Perform the actual network scan"""
+        discovered = []
+        
+        # Update status
+        self.root.after(0, lambda: self.scan_status_label.configure(
+            text="Scanning using mDNS..."))
+        self.root.after(0, lambda: self.scan_progress.set(0.2))
+        
+        # Load configured subnets
+        configured_subnets = self.load_subnets_config()
+        self.root.after(0, lambda: self.scan_status_label.configure(
+            text=f"Loaded {len(configured_subnets)} subnet(s) from config"))
+        
+        # METHOD 1: mDNS Discovery
+        if ZEROCONF_AVAILABLE:
+            try:
+                self.log("Attempting mDNS discovery...")
+                zeroconf = Zeroconf()
+                listener = SunshineListener()
+                
+                # Browse for Sunshine services (_nvstream._tcp is used by Sunshine)
+                browser = ServiceBrowser(zeroconf, "_nvstream._tcp.local.", listener)
+                
+                # Wait for discovery (5 seconds)
+                time.sleep(5)
+                
+                discovered = listener.discovered_hosts.copy()
+                
+                zeroconf.close()
+                
+                self.log(f"mDNS discovery found {len(discovered)} host(s)")
+                self.root.after(0, lambda: self.scan_progress.set(0.5))
+                
+            except Exception as e:
+                self.log(f"mDNS discovery failed: {e}")
+        else:
+            self.log("Zeroconf not available, skipping mDNS discovery")
+        
+        # METHOD 2: Port Scanning Fallback (if no hosts found or zeroconf unavailable)
+        if len(discovered) == 0:
+            self.root.after(0, lambda: self.scan_status_label.configure(
+                text="No mDNS hosts found. Starting port scan..."))
+            self.root.after(0, lambda: self.scan_progress.set(0.6))
+            
+            self.log("Starting port scan on configured subnets...")
+            port_scan_results = self._port_scan_network(configured_subnets)
+            discovered.extend(port_scan_results)
+            self.log(f"Port scan found {len(port_scan_results)} additional host(s)")
+        
+        # Update UI with results
+        self.root.after(0, lambda: self.scan_progress.set(1.0))
+        
+        if discovered:
+            self.root.after(0, lambda: self.scan_status_label.configure(
+                text=f"✅ Found {len(discovered)} Sunshine host(s)", 
+                text_color="green"))
+            
+            for host in discovered:
+                self.root.after(0, lambda h=host: self._create_host_card(h))
+        else:
+            self.root.after(0, lambda: self.scan_status_label.configure(
+                text="❌ No Sunshine hosts found on network", 
+                text_color="orange"))
+            self.log("No Sunshine hosts discovered")
+    
+    def _port_scan_network(self, subnets=None):
+        """Scan configured subnets for Sunshine ports"""
+        discovered = []
+        
+        if subnets is None:
+            subnets = self.load_subnets_config()
+        
+        try:
+            total_hosts = 0
+            all_ips = []
+            
+            # Collect all IPs from all subnets
+            for subnet_str in subnets:
+                network = IPv4Network(subnet_str, strict=False)
+                hosts = list(network.hosts())
+                total_hosts += len(hosts)
+                all_ips.extend([(str(ip), subnet_str) for ip in hosts])
+                self.log(f"Subnet {subnet_str}: {len(hosts)} hosts")
+            
+            self.log(f"Scanning {total_hosts} total hosts across {len(subnets)} subnet(s)...")
+            
+            # Update status with subnet info
+            self.root.after(0, lambda: self.scan_status_label.configure(
+                text=f"Scanning {total_hosts} hosts in {len(subnets)} subnet(s)..."))
+            
+            # Scan in parallel using thread pool
+            with ThreadPoolExecutor(max_workers=100) as executor:
+                future_to_ip = {executor.submit(self._check_sunshine_port, ip, subnet): (ip, subnet) 
+                              for ip, subnet in all_ips}
+                
+                completed = 0
+                for future in as_completed(future_to_ip):
+                    result = future.result()
+                    if result:
+                        discovered.append(result)
+                    
+                    # Update progress
+                    completed += 1
+                    if completed % 10 == 0:  # Update every 10 hosts
+                        progress = 0.6 + (0.3 * completed / total_hosts)
+                        self.root.after(0, lambda p=progress: self.scan_progress.set(p))
+            
+            return discovered
+            
+        except Exception as e:
+            self.log(f"Port scan error: {e}")
+            return []
+    
+    def _check_sunshine_port(self, ip, subnet=None):
+        """Check if a specific IP has Sunshine running"""
+        ports = [SUNSHINE_HTTPS_PORT, SUNSHINE_HTTP_PORT, SUNSHINE_ALT_PORT]
+        
+        for port in ports:
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(2.0)  # Increased timeout for VPN connections
+                result = sock.connect_ex((ip, port))
+                sock.close()
+                
+                if result == 0:
+                    # Port is open, likely Sunshine
+                    try:
+                        hostname = socket.gethostbyaddr(ip)[0]
+                    except:
+                        hostname = f"host-{ip.split('.')[-1]}"
+                    
+                    return {
+                        'hostname': hostname,
+                        'ip_address': ip,
+                        'port': port,
+                        'method': f'Port Scan ({subnet})' if subnet else 'Port Scan'
+                    }
+            except:
+                pass
+        
+        return None
+    
+    def _create_host_card(self, host):
+        """Create a card UI element for a discovered host"""
+        # Create card frame
+        card = ctk.CTkFrame(self.scan_results_frame, fg_color=("gray75", "gray25"))
+        card.pack(fill="x", pady=5, padx=5)
+        
+        # Left side - Host info
+        info_frame = ctk.CTkFrame(card, fg_color="transparent")
+        info_frame.pack(side="left", fill="both", expand=True, padx=10, pady=10)
+        
+        hostname_label = ctk.CTkLabel(
+            info_frame,
+            text=f"🖥️  {host.get('hostname', 'Unknown')}",
+            font=("Arial", 13, "bold"),
+            anchor="w"
+        )
+        hostname_label.pack(anchor="w")
+        
+        ip_label = ctk.CTkLabel(
+            info_frame,
+            text=f"📍 IP: {host['ip_address']}  |  Port: {host.get('port', 'N/A')}  |  Method: {host.get('method', 'Unknown')}",
+            font=("Arial", 10),
+            anchor="w",
+            text_color="gray"
+        )
+        ip_label.pack(anchor="w")
+        
+        # Right side - Add button
+        add_btn = ctk.CTkButton(
+            card,
+            text="➕ Add to Database",
+            command=lambda h=host: self._quick_add_host(h),
+            width=150
+        )
+        add_btn.pack(side="right", padx=10, pady=10)
+    
+    def _quick_add_host(self, host):
+        """Auto-fill form with discovered host information"""
+        # Create credentials input dialog
+        cred_window = ctk.CTkToplevel(self.root)
+        cred_window.title("Enter Sunshine Credentials")
+        cred_window.geometry("400x280")
+        cred_window.transient(self.root)
+        cred_window.grab_set()
+        
+        # Title
+        title = ctk.CTkLabel(
+            cred_window, 
+            text=f"🔐 Sunshine Credentials", 
+            font=("Arial", 16, "bold")
+        )
+        title.pack(pady=15)
+        
+        # Info label
+        info_label = ctk.CTkLabel(
+            cred_window,
+            text=f"Host: {host.get('hostname', 'Unknown')}\\nIP: {host['ip_address']}\\n\\nEnter Sunshine login credentials:",
+            font=("Arial", 10)
+        )
+        info_label.pack(pady=5)
+        
+        # Username field
+        username_label = ctk.CTkLabel(cred_window, text="Sunshine Username:")
+        username_label.pack(pady=(10, 0))
+        username_entry = ctk.CTkEntry(cred_window, width=250)
+        username_entry.pack(pady=5)
+        username_entry.insert(0, "admin")  # Default suggestion
+        username_entry.focus()
+        
+        # Password field
+        password_label = ctk.CTkLabel(cred_window, text="Sunshine Password:")
+        password_label.pack(pady=(10, 0))
+        password_entry = ctk.CTkEntry(cred_window, width=250, show="•")
+        password_entry.pack(pady=5)
+        
+        # Result storage
+        credentials = {'confirmed': False}
+        
+        def on_confirm():
+            sunshine_user = username_entry.get().strip()
+            sunshine_pass = password_entry.get().strip()
+            
+            if not sunshine_user or not sunshine_pass:
+                messagebox.showwarning(
+                    "Missing Credentials",
+                    "Please enter both username and password"
+                )
+                return
+            
+            credentials['sunshine_user'] = sunshine_user
+            credentials['sunshine_password'] = sunshine_pass
+            credentials['confirmed'] = True
+            cred_window.destroy()
+        
+        def on_cancel():
+            credentials['confirmed'] = False
+            cred_window.destroy()
+        
+        # Buttons
+        button_frame = ctk.CTkFrame(cred_window)
+        button_frame.pack(pady=15)
+        
+        confirm_btn = ctk.CTkButton(button_frame, text="OK", command=on_confirm, width=100)
+        confirm_btn.pack(side="left", padx=5)
+        
+        cancel_btn = ctk.CTkButton(button_frame, text="Cancel", command=on_cancel, width=100)
+        cancel_btn.pack(side="left", padx=5)
+        
+        # Handle Enter key
+        password_entry.bind('<Return>', lambda e: on_confirm())
+        
+        # Wait for window to close
+        self.root.wait_window(cred_window)
+        
+        # If user confirmed, auto-fill the form
+        if credentials.get('confirmed'):
+            # Auto-fill hostname
+            self.add_vm_entries['hostname'].delete(0, ctk.END)
+            self.add_vm_entries['hostname'].insert(0, host.get('hostname', ''))
+            
+            # Auto-fill IP address
+            self.add_vm_entries['ip_address'].delete(0, ctk.END)
+            self.add_vm_entries['ip_address'].insert(0, host['ip_address'])
+            
+            # Auto-fill Sunshine credentials
+            self.add_vm_entries['sunshine_user'].delete(0, ctk.END)
+            self.add_vm_entries['sunshine_user'].insert(0, credentials['sunshine_user'])
+            
+            self.add_vm_entries['sunshine_password'].delete(0, ctk.END)
+            self.add_vm_entries['sunshine_password'].insert(0, credentials['sunshine_password'])
+            
+            # Log action
+            self.log(f"Auto-filled form with host: {host['ip_address']} and credentials")
+            
+            # Notify user
+            messagebox.showinfo(
+                "Host Ready",
+                f"All fields have been filled!\\n\\n"
+                f"Hostname: {host.get('hostname', 'Unknown')}\\n"
+                f"IP: {host['ip_address']}\\n"
+                f"User: {credentials['sunshine_user']}\\n\\n"
+                f"Click 'Add VM Manually' to register."
+            )
+            
+            # Switch to Add VM tab
+            self.tabs.set("➕ Add VM")
+        else:
+            self.log("Host selection cancelled by user")
     
     def log(self, message):
         """Adds a message to the log area"""

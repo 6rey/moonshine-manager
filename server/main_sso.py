@@ -12,9 +12,46 @@ import jwt
 import datetime
 import os
 import asyncio
+from contextlib import asynccontextmanager
 
 # Import database manager
 from database_sso import DatabaseManager
+
+# --- Global database manager ---
+db_manager = None
+
+# --- Lifespan Manager ---
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Manage application lifespan with proper async initialization"""
+    global db_manager
+    
+    # Startup
+    print("🚀 Starting Eclypse SSO Server...")
+    
+    # Get database URL from environment
+    db_url = os.getenv("DB_URL", "postgresql://myuser:mypass@localhost:5432/vdi_db")
+    
+    # Initialize database manager
+    db_manager = DatabaseManager(db_url)
+    await db_manager.connect()
+    
+    print("✅ Database initialized and connected")
+    
+    yield
+    
+    # Shutdown
+    print("🛑 Shutting down...")
+    if db_manager:
+        await db_manager.close()
+    print("✅ Database connection closed")
+
+# --- FastAPI App ---
+app = FastAPI(
+    title="Eclypse SSO Server", 
+    version="1.0.0",
+    lifespan=lifespan
+)
 
 # --- Configuration ---
 SECRET_KEY = os.getenv("JWT_SECRET_KEY", "SUPER_SECRET_KEY")
@@ -67,18 +104,11 @@ class CompletePairingRequest(BaseModel):
     vm_id: int
     pin: str
 
-# --- FastAPI App ---
-app = FastAPI(title="Eclypse SSO Server", version="1.0.0")
-
-# --- Database Manager Instance ---
-db_manager = None
-
+# --- Dependency to get database manager ---
 async def get_db():
     """Dependency to get database manager"""
-    global db_manager
     if db_manager is None:
-        db_manager = DatabaseManager()
-        await db_manager.initialize()
+        raise HTTPException(status_code=500, detail="Database not initialized")
     return db_manager
 
 # --- JWT Token Functions ---
@@ -354,24 +384,6 @@ async def root():
 @app.get("/health")
 async def health():
     return {"status": "healthy", "service": "eclypse-sso-server"}
-
-# --- Startup Event ---
-
-@app.on_event("startup")
-async def startup_event():
-    """Initialize database on startup"""
-    global db_manager
-    db_manager = DatabaseManager()
-    await db_manager.initialize()
-    print("✅ Database initialized")
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Cleanup on shutdown"""
-    global db_manager
-    if db_manager:
-        await db_manager.close()
-        print("✅ Database connection closed")
 
 if __name__ == "__main__":
     import uvicorn

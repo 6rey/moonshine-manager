@@ -13,7 +13,23 @@ import getpass
 
 # Import des modèles
 from models import Base, User, SSOAccount
-from security import pwd_context
+
+# Simple password hashing without external dependencies
+import hashlib
+import secrets
+
+def hash_password(password: str) -> str:
+    """Simple password hashing using hashlib"""
+    salt = secrets.token_hex(16)
+    return f"{salt}:{hashlib.sha256((password + salt).encode()).hexdigest()}"
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """Verify password against hash"""
+    try:
+        salt, hash_val = hashed_password.split(':')
+        return hashlib.sha256((plain_password + salt).encode()).hexdigest() == hash_val
+    except:
+        return False
 
 def get_database_config():
     """Demande les informations de connexion à la base de données"""
@@ -114,13 +130,13 @@ def create_admin_user(db_config, admin_config):
             print(f"⚠️  L'utilisateur '{admin_config['username']}' existe déjà")
             update = input("Voulez-vous mettre à jour son mot de passe? (o/n): ").strip().lower()
             if update in ['o', 'oui', 'y', 'yes']:
-                existing_user.password_hash = pwd_context.hash(admin_config['password'])
+                existing_user.password_hash = hash_password(admin_config['password'])
                 db.commit()
                 print(f"✅ Mot de passe de '{admin_config['username']}' mis à jour")
             return True
         
         # Créer le nouvel utilisateur admin
-        hashed_password = pwd_context.hash(admin_config['password'])
+        hashed_password = hash_password(admin_config['password'])
         admin_user = User(
             username=admin_config['username'],
             password_hash=hashed_password,

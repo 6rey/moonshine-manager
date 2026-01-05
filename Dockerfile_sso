@@ -1,0 +1,37 @@
+# Dockerfile for Eclypse SSO Backend
+FROM python:3.11-slim
+
+# Set working directory
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    gcc \
+    postgresql-client \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements
+COPY server/requirements.txt .
+
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
+COPY server/ .
+
+# Create SSL certificates directory
+RUN mkdir -p /app/ssl
+
+# Generate self-signed SSL certificates (for development)
+# In production, use proper certificates
+RUN openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -days 365 -nodes -subj "/C=US/ST=State/L=City/O=Eclypse/CN=localhost"
+
+# Expose port
+EXPOSE 443
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD python -c "import requests; requests.get('https://localhost/health', verify=False)" || exit 1
+
+# Run the application
+CMD ["python", "main_sso.py"]

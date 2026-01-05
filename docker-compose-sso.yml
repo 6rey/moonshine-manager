@@ -1,0 +1,71 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  db:
+    image: postgres:15
+    container_name: vdi_db_sso
+    restart: always
+    environment:
+      POSTGRES_USER: myuser
+      POSTGRES_PASSWORD: mypass
+      POSTGRES_DB: vdi_db
+    volumes:
+      - db_data_sso:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    networks:
+      - vdi_network_sso
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U myuser"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # FastAPI Backend with SSO
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile_sso
+    container_name: vdi_api_sso
+    restart: always
+    environment:
+      DB_URL: postgresql://myuser:mypass@db:5432/vdi_db
+      JWT_SECRET_KEY: "SUPER_SECRET_KEY_CHANGE_IN_PRODUCTION"
+      PYTHONUNBUFFERED: 1
+    volumes:
+      - ./server:/app
+    ports:
+      - "443:443"
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - vdi_network_sso
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('https://localhost/health', verify=False)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Optional: Adminer for database management
+  adminer:
+    image: adminer
+    container_name: vdi_adminer
+    restart: always
+    ports:
+      - "8080:8080"
+    environment:
+      ADMINER_DEFAULT_SERVER: db
+    depends_on:
+      - db
+    networks:
+      - vdi_network_sso
+
+networks:
+  vdi_network_sso:
+    driver: bridge
+
+volumes:
+  db_data_sso:

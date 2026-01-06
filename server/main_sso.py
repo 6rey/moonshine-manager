@@ -30,13 +30,23 @@ async def lifespan(app: FastAPI):
     print("🚀 Starting Eclypse SSO Server...")
     
     # Get database URL from environment
-    db_url = os.getenv("DB_URL", "postgresql://myuser:mypass@localhost:5432/vdi_db")
+    db_url = os.getenv("DB_URL", "postgresql://myuser:mypass@db:5432/vdi_db")
+    
+    # Debug: Print connection info (remove in production)
+    print(f"🔧 Database URL: {db_url.replace('mypass', '***')}")
+    print(f"🔧 Environment DB_URL: {os.getenv('DB_URL', 'Not set')}")
     
     # Initialize database manager
     db_manager = DatabaseManager(db_url)
-    await db_manager.connect()
     
-    print("✅ Database initialized and connected")
+    try:
+        await db_manager.connect()
+        print("✅ Database initialized and connected")
+    except Exception as e:
+        print(f"❌ Failed to initialize database: {e}")
+        # Don't crash the app, but log the error
+        # The app will still start but database operations will fail
+        print("⚠️  Application will start but database operations may fail")
     
     yield
     

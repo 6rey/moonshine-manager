@@ -16,9 +16,28 @@ class DatabaseManager:
         self.pool = None
     
     async def connect(self):
-        """Create connection pool"""
-        self.pool = await asyncpg.create_pool(self.dsn, min_size=5, max_size=20)
-        await self.initialize_tables()
+        """Create connection pool with retry logic"""
+        import asyncio
+        
+        max_retries = 10
+        retry_delay = 2
+        
+        for attempt in range(max_retries):
+            try:
+                print(f"🔄 Attempting to connect to database (attempt {attempt + 1}/{max_retries})...")
+                self.pool = await asyncpg.create_pool(self.dsn, min_size=5, max_size=20)
+                print(f"✅ Database connection pool created successfully")
+                await self.initialize_tables()
+                return
+            except Exception as e:
+                print(f"❌ Connection attempt {attempt + 1} failed: {e}")
+                if attempt < max_retries - 1:
+                    print(f"⏳ Retrying in {retry_delay} seconds...")
+                    await asyncio.sleep(retry_delay)
+                else:
+                    print(f"🔧 Connection string attempted: {self.dsn.replace('mypass', '***')}")
+                    print(f"💡 Make sure the database container is running and the database 'vdi_db' exists")
+                    raise
     
     async def close(self):
         """Close connection pool"""

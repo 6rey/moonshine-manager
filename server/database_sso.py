@@ -245,6 +245,15 @@ class DatabaseManager:
             
             return True
     
+    async def link_sso_account(self, user_id: int, provider: str,
+                              provider_user_id: str, email: str) -> bool:
+        """Link SSO account to user"""
+        return await self.link_sso_to_user(user_id, provider, provider_user_id, email)
+    
+    async def unlink_sso_account(self, user_id: int, provider: str) -> bool:
+        """Unlink SSO account from user"""
+        return await self.unlink_sso_from_user(user_id, provider)
+    
     async def unlink_sso_from_user(self, user_id: int, provider: str) -> bool:
         """Unlink SSO account from user"""
         async with self.pool.acquire() as conn:
@@ -275,10 +284,14 @@ class DatabaseManager:
             result = await conn.execute("DELETE FROM users WHERE id = $1", user_id)
             return result.split()[-1] == '1'
     
-    async def list_users(self) -> List[Dict]:
-        """List all users"""
+    async def get_all_users(self) -> List[Dict]:
+        """Get all users"""
         async with self.pool.acquire() as conn:
             return await conn.fetch("SELECT id, username, email, role, sso_linked, created_at FROM users ORDER BY id")
+    
+    async def list_users(self) -> List[Dict]:
+        """List all users"""
+        return await self.get_all_users()
     
     # ==================== VM Operations ====================
     
@@ -301,16 +314,37 @@ class DatabaseManager:
         async with self.pool.acquire() as conn:
             return await conn.fetchrow("SELECT * FROM vms WHERE id = $1", vm_id)
     
+    async def get_vm_by_id(self, vm_id: int) -> Optional[Dict]:
+        """Get VM by ID (alias for get_vm)"""
+        return await self.get_vm(vm_id)
+    
     async def delete_vm(self, vm_id: int) -> bool:
         """Delete VM"""
         async with self.pool.acquire() as conn:
             result = await conn.execute("DELETE FROM vms WHERE id = $1", vm_id)
             return result.split()[-1] == '1'
     
-    async def list_vms(self) -> List[Dict]:
-        """List all VMs"""
+    async def get_all_vms(self) -> List[Dict]:
+        """Get all VMs"""
         async with self.pool.acquire() as conn:
             return await conn.fetch("SELECT * FROM vms ORDER BY id")
+    
+    async def list_vms(self) -> List[Dict]:
+        """List all VMs"""
+        return await self.get_all_vms()
+    
+    async def get_user_vms(self, user_id: int) -> List[Dict]:
+        """Get VMs assigned to a specific user"""
+        async with self.pool.acquire() as conn:
+            return await conn.fetch(
+                """
+                SELECT v.* FROM vms v
+                JOIN assignments a ON v.id = a.vm_id
+                WHERE a.user_id = $1
+                ORDER BY v.id
+                """,
+                user_id
+            )
     
     # ==================== Assignment Operations ====================
     
@@ -334,12 +368,16 @@ class DatabaseManager:
         async with self.pool.acquire() as conn:
             result = await conn.execute(
                 """
-                DELETE FROM assignments 
+                DELETE FROM assignments
                 WHERE user_id = $1 AND vm_id = $2
                 """,
                 user_id, vm_id
             )
             return result.split()[-1] == '1'
+    
+    async def unassign_vm_from_user(self, user_id: int, vm_id: int) -> bool:
+        """Remove VM assignment (alias for unassign_vm)"""
+        return await self.unassign_vm(user_id, vm_id)
     
     async def get_user_assignments(self, user_id: int) -> List[Dict]:
         """Get all VMs assigned to user"""

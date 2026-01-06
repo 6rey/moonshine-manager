@@ -12,6 +12,7 @@ import jwt
 import datetime
 import os
 import asyncio
+import hashlib
 from contextlib import asynccontextmanager
 
 # Import database manager
@@ -159,11 +160,15 @@ async def register(request: UserCreate, db: DatabaseManager = Depends(get_db)):
         if existing_email:
             raise HTTPException(status_code=400, detail="Email already exists")
     
-    # Create user (in production, hash the password)
+    # Hash the password using the same method as Init.py
+    salt = os.urandom(16).hex()
+    password_hash = f"{salt}:{hashlib.sha256((request.password + salt).encode()).hexdigest()}"
+    
+    # Create user with hashed password
     user_id = await db.create_user(
         username=request.username,
         email=request.email,
-        password_hash=request.password,  # In production: hash this!
+        password_hash=password_hash,
         role=request.role
     )
     
@@ -180,10 +185,21 @@ async def login(request: UserLogin, db: DatabaseManager = Depends(get_db)):
     if not user:
         raise HTTPException(status_code=401, detail="Invalid credentials")
     
-    # In production, verify password hash
-    # For now, simple check
-    stored_password = user.get("password_hash")
-    if stored_password != request.password:
+    # Verify password against stored hash
+    stored_password_hash = user.get("password_hash")
+    
+    # Handle NULL password (SSO-only users)
+    if not stored_password_hash:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    
+    # Verify using the same hash function as Init.py
+    try:
+        salt, stored_hash = stored_password_hash.split(':')
+        computed_hash = hashlib.sha256((request.password + salt).encode()).hexdigest()
+        
+        if computed_hash != stored_hash:
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+    except Exception:
         raise HTTPException(status_code=401, detail="Invalid credentials")
     
     token = create_jwt_token(dict(user))

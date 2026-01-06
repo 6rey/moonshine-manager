@@ -116,15 +116,22 @@ class DatabaseManager:
         async with self.pool.acquire() as conn:
             result = await conn.fetchrow("SELECT COUNT(*) as count FROM users")
             if result['count'] == 0:
-                # Create default admin (password: Test1234)
+                # Create default admin with a secure password
+                # Password: "admin123" (change in production!)
+                import hashlib
+                import secrets
+                salt = secrets.token_hex(16)
+                password_hash = f"{salt}:{hashlib.sha256(('admin123' + salt).encode()).hexdigest()}"
+                
                 await conn.execute(
                     """
                     INSERT INTO users (username, email, password_hash, role, sso_linked)
                     VALUES ($1, $2, $3, $4, $5)
                     """,
-                    "admin", "admin@example.com", None, "master", False
+                    "admin", "admin@example.com", password_hash, "master", False
                 )
-                print("Default admin user created: admin / (no password - use SSO)")
+                print("✅ Default admin user created: admin / admin123")
+                print("⚠️  CHANGE THIS PASSWORD IMMEDIATELY IN PRODUCTION!")
     
     # ==================== User Operations ====================
     

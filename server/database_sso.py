@@ -162,11 +162,11 @@ class DatabaseManager:
                 provider, provider_user_id
             )
     
-    async def create_user(self, username: str, email: str = None, password_hash: str = None, 
+    async def create_user(self, username: str, email: str = None, password_hash: str = None,
                          role: str = "user") -> int:
         """Create a new user"""
         async with self.pool.acquire() as conn:
-            user_id = await conn.execute(
+            result = await conn.fetchrow(
                 """
                 INSERT INTO users (username, email, password_hash, role)
                 VALUES ($1, $2, $3, $4)
@@ -174,9 +174,9 @@ class DatabaseManager:
                 """,
                 username, email, password_hash, role
             )
-            return user_id
+            return result['id']
     
-    async def create_user_from_sso(self, email: str, name: str, provider: str, 
+    async def create_user_from_sso(self, email: str, name: str, provider: str,
                                   provider_user_id: str) -> int:
         """Create user from SSO authentication"""
         async with self.pool.acquire() as conn:
@@ -191,7 +191,7 @@ class DatabaseManager:
                 counter += 1
             
             # Create user
-            user_id = await conn.execute(
+            result = await conn.fetchrow(
                 """
                 INSERT INTO users (username, email, role, sso_linked)
                 VALUES ($1, $2, $3, $4)
@@ -199,6 +199,7 @@ class DatabaseManager:
                 """,
                 username, email, "user", True
             )
+            user_id = result['id']
             
             # Create SSO account link
             await conn.execute(
@@ -295,11 +296,11 @@ class DatabaseManager:
     
     # ==================== VM Operations ====================
     
-    async def create_vm(self, hostname: str, ip_address: str, 
+    async def create_vm(self, hostname: str, ip_address: str,
                        sunshine_user: str = None, sunshine_password: str = None) -> int:
         """Create a new VM"""
         async with self.pool.acquire() as conn:
-            vm_id = await conn.execute(
+            result = await conn.fetchrow(
                 """
                 INSERT INTO vms (hostname, ip_address, sunshine_user, sunshine_password)
                 VALUES ($1, $2, $3, $4)
@@ -307,7 +308,7 @@ class DatabaseManager:
                 """,
                 hostname, ip_address, sunshine_user, sunshine_password
             )
-            return vm_id
+            return result['id']
     
     async def get_vm(self, vm_id: int) -> Optional[Dict]:
         """Get VM by ID"""

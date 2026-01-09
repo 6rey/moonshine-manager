@@ -382,9 +382,9 @@ async def prepare_pairing(request: PairingRequest, token: str = Depends(OAuth2Pa
         raise HTTPException(status_code=404, detail="VM not found")
     
     # In production, this would communicate with Sunshine to generate PIN
-    # For now, generate a random PIN
+    # For now, generate a random 4-digit PIN
     import random
-    pin = str(random.randint(100000, 999999))
+    pin = str(random.randint(1000, 9999))
     
     # Store PIN temporarily (in production, use Redis or similar)
     # For now, just return it

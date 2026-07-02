@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+sqlalchemy
+psycopg2-binary
+asyncpg
+pydantic-settings
+PyJWT
+authlib
+itsdangerous
+httpx
